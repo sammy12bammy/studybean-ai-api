@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List
 import json
-from transformers import pipeline
+from transformers import pipeline, AutoModelForSeq2SeqLM, AutoTokenizer
 
 app = FastAPI()
 
@@ -13,8 +13,27 @@ class Flashcard(BaseModel):
     question: str
     answer: str
 
-#load model once at startup
-generator = pipeline("text2text-generation", "google/flan-t5-small")
+# choose your model
+MODEL_NAME = "google/flan-t5-small"
+
+# load tokenizer
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+# load model in 8-bit with automatic device assignment
+model = AutoModelForSeq2SeqLM.from_pretrained(
+    MODEL_NAME,
+    load_in_8bit=True,
+    device_map="auto"
+)
+
+# create a text2text pipeline around it
+generator = pipeline(
+    "text2text-generation",
+    model=model,
+    tokenizer=tokenizer,
+    max_length=512,
+    num_return_sequences=1
+)
 
 def generate_flashcards(notes: str, count: int = 5) -> List[dict]:
     prompt = (
@@ -22,12 +41,13 @@ def generate_flashcards(notes: str, count: int = 5) -> List[dict]:
         "Output a JSON array where each item has keys 'question' and 'answer':\n\n"
         f"{notes}"
     )
-    output = generator(prompt, max_length=512, num_return_sequences=1)[0]["generated_text"]
-    return json.loads(output)
-
+    raw = generator(prompt)[0]["generated_text"]
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # if the model output isn’t valid JSON, return an empty list
+        return []
 
 @app.post("/flashcards", response_model=List[Flashcard])
 async def create_flashcards(request: NotesRequest):
-    cards = generate_flashcards(request.notes)
-    return cards
-
+    return generate_flashcards(request.notes)
